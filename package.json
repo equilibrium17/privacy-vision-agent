@@ -1,0 +1,12 @@
+{
+  "name": "privacy-vision-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Manifest V3 Chrome extension shell for local privacy-preserving vision experiments.",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1"
+  }
+}

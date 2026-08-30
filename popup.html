@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy Vision Agent</title>
+    <style>
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 16px;
+        font-family: Arial, sans-serif;
+        color: #1f2937;
+        background: #ffffff;
+      }
+
+      button {
+        width: 100%;
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 6px;
+        color: #ffffff;
+        background: #2563eb;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      #taskInput {
+        box-sizing: border-box;
+        width: 100%;
+        margin: 12px 0 8px;
+        padding: 9px 10px;
+        border: 1px solid #9ca3af;
+        border-radius: 6px;
+        font: inherit;
+        font-size: 13px;
+      }
+
+      #runAgentButton {
+        background: #047857;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.7;
+      }
+
+      #screenshotCanvas {
+        width: 100%;
+        margin-top: 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        display: none;
+      }
+
+      #status {
+        min-height: 18px;
+        margin-top: 10px;
+        font-size: 12px;
+        color: #4b5563;
+      }
+
+      #agentResult {
+        margin-top: 10px;
+        padding: 9px;
+        border-left: 3px solid #047857;
+        background: #f0fdf4;
+        font-size: 12px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="captureButton" type="button">Capture Screen</button>
+    <input id="taskInput" type="text" placeholder="Describe a task" aria-label="Task description">
+    <button id="runAgentButton" type="button">Run Agent</button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div id="agentResult" role="status" aria-live="polite" hidden></div>
+    <canvas id="screenshotCanvas" aria-label="Captured current tab screenshot with face detections"></canvas>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
