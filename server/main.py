@@ -14,10 +14,12 @@ from starlette.concurrency import run_in_threadpool
 
 load_dotenv()
 
+from server.ollama_client import generate_ollama_action
+
 # Keep the model configurable. Qwen 3.6 27B is Groq's current production
 # multimodal model and is available for image + JSON requests.
 GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2-vl:7b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "moondream")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB max image payload
 MAX_INTERACTIVE_ELEMENTS = 20
 MAX_CONTEXT_STRING_CHARS = 120
@@ -66,6 +68,7 @@ class AnalyzeRequest(BaseModel):
     pii_fields: list[PiiField] = Field(default_factory=list)
     elements: list[PageElement] = Field(default_factory=list)
     task: str
+    provider: Literal["groq", "ollama"] = "groq"
 
 
 class AgentAction(BaseModel):
@@ -229,19 +232,47 @@ def generate_groq_action(request: AnalyzeRequest) -> AnalyzeResponse:
         },
     ]
 
-    try:
-        completion = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=request_messages,
-            response_format={"type": "json_object"},
-            max_completion_tokens=512,
-        )
-        response_text = completion.choices[0].message.content
-        payload = json.loads(response_text)
-        return parse_analyze_response(payload)
-    except Exception as exc:
-        logger.error(f"Groq API call failed: {exc}")
-        raise HTTPException(status_code=502, detail=f"Groq VLM Provider Error: {exc}") from exc
+    for attempt in range(1, 3):
+        try:
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=request_messages,
+                response_format={"type": "json_object"},
+                max_completion_tokens=512,
+            )
+            response_text = completion.choices[0].message.content
+            payload = json.loads(response_text)
+            response = parse_analyze_response(payload)
+            logger.info(f"Groq attempt {attempt}/2 succeeded")
+            return response
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Groq attempt {attempt}/2 failed: invalid JSON response ({exc})")
+            if attempt == 2:
+                raise HTTPException(
+                    status_code=502,
+                    detail="The AI model couldn't produce a valid response after 2 attempts. Try a simpler task or page.",
+                ) from exc
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+            error_body = getattr(exc, "body", None)
+            is_json_validate_failed = (
+                400 <= status_code < 500
+                and "json_validate_failed" in str(error_body or exc)
+            ) if isinstance(status_code, int) else False
+
+            if is_json_validate_failed:
+                logger.warning(
+                    f"Groq attempt {attempt}/2 failed: json_validate_failed ({exc})"
+                )
+                if attempt == 2:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="The AI model couldn't produce a valid response after 2 attempts. Try a simpler task or page.",
+                    ) from exc
+                continue
+
+            logger.error(f"Groq API call failed on attempt {attempt}/2: {exc}")
+            raise HTTPException(status_code=502, detail=f"Groq VLM Provider Error: {exc}") from exc
 
 
 def parse_analyze_response(payload: dict[str, Any]) -> AnalyzeResponse:
@@ -280,5 +311,14 @@ def parse_analyze_response(payload: dict[str, Any]) -> AnalyzeResponse:
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     parse_image_data_url(request.image)
-    logger.info("Processing analyze request for task")
+    logger.info(f"Processing analyze request with {request.provider} provider")
+    if request.provider == "ollama":
+        payload = await generate_ollama_action(
+            build_system_prompt(),
+            build_user_prompt(request),
+            request.image,
+            OLLAMA_MODEL,
+        )
+        return parse_analyze_response(payload)
+
     return await run_in_threadpool(generate_groq_action, request)

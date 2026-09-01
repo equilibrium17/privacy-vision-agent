@@ -69,14 +69,28 @@
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
+
+      #perfStats {
+        margin-top: 8px;
+        color: #6b7280;
+        font-size: 10px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
     </style>
   </head>
   <body>
     <button id="captureButton" type="button">Capture Screen</button>
     <input id="taskInput" type="text" placeholder="Describe a task" aria-label="Task description">
+    <label for="providerSelect">Provider:</label>
+    <select id="providerSelect" aria-label="Provider">
+      <option value="groq" selected>Cloud (Groq)</option>
+      <option value="ollama">Local (Ollama)</option>
+    </select>
     <button id="runAgentButton" type="button">Run Agent</button>
     <div id="status" role="status" aria-live="polite"></div>
     <div id="agentResult" role="status" aria-live="polite" hidden></div>
+    <div id="perfStats" aria-live="polite">Face model: — | Face delegate: CPU | Detection: — | DOM scan: — | Image: — | Server: —</div>
     <canvas id="screenshotCanvas" aria-label="Captured current tab screenshot with face detections"></canvas>
     <script type="module" src="popup.js"></script>
   </body>

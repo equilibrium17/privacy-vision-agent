@@ -7,10 +7,12 @@ const chrome = globalThis.browser ?? globalThis.chrome;
 const captureButton = document.getElementById("captureButton");
 const runAgentButton = document.getElementById("runAgentButton");
 const taskInput = document.getElementById("taskInput");
+const providerSelect = document.getElementById("providerSelect");
 const screenshotCanvas = document.getElementById("screenshotCanvas");
 const canvasContext = screenshotCanvas.getContext("2d");
 const statusMessage = document.getElementById("status");
 const agentResult = document.getElementById("agentResult");
+const perfStats = document.getElementById("perfStats");
 
 const analyzeUrl = "http://127.0.0.1:8000/analyze";
 
@@ -25,12 +27,45 @@ let faceDetectorPromise;
 let originalScreenshotDataUrl = "";
 let latestPiiFields = [];
 let latestElements = [];
+const performanceMetrics = {
+  faceModelLoadMs: null,
+  faceDelegate: "CPU",
+  detectionMs: null,
+  domScanMs: null,
+  imageSizeKb: null,
+  serverRoundTripMs: null
+};
+
+function formatMilliseconds(value) {
+  return value == null ? "—" : `${Math.round(value)}ms`;
+}
+
+function formatSecondsOrMilliseconds(value) {
+  if (value == null) {
+    return "—";
+  }
+
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`;
+}
+
+function updatePerformanceStats() {
+  perfStats.textContent = [
+    `Face model: ${formatMilliseconds(performanceMetrics.faceModelLoadMs)}`,
+    `Face delegate: ${performanceMetrics.faceDelegate ?? "—"}`,
+    `Detection: ${formatMilliseconds(performanceMetrics.detectionMs)}`,
+    `DOM scan: ${formatMilliseconds(performanceMetrics.domScanMs)}`,
+    `Image: ${performanceMetrics.imageSizeKb == null ? "—" : `${performanceMetrics.imageSizeKb.toFixed(1)}KB`}`,
+    `Server: ${formatSecondsOrMilliseconds(performanceMetrics.serverRoundTripMs)}`
+  ].join(" | ");
+}
 
 async function getFaceDetector() {
   if (!faceDetectorPromise) {
     faceDetectorPromise = (async () => {
       const loadStart = performance.now();
       const vision = await FilesetResolver.forVisionTasks(wasmPath);
+      // MediaPipe also supports delegate: "GPU" (WebGL-backed). It measured
+      // slower locally for this lightweight model, so CPU is the deliberate default.
       const detector = await FaceDetector.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: modelPath,
@@ -39,7 +74,11 @@ async function getFaceDetector() {
         minDetectionConfidence,
         runningMode: "IMAGE"
       });
-      console.log(`Face detector load time: ${(performance.now() - loadStart).toFixed(1)} ms`);
+
+      performanceMetrics.faceModelLoadMs = performance.now() - loadStart;
+      console.log(
+        `Face detector initialized with CPU delegate; load time: ${performanceMetrics.faceModelLoadMs.toFixed(1)} ms`
+      );
       return detector;
     })();
   }
@@ -216,15 +255,6 @@ function mergeFramePiiResults(injectionResults) {
 
   }
 
-  console.log('[FIELD-DEBUG] total merged PII fields:', fields.length, 'first 5 raw entries:', JSON.stringify(fields.slice(0, 5)));
-
-  console.log("Merged PII scan results from frames", {
-    frameCount: frameResults.length,
-    fieldCount: fields.length,
-    elementCount: elements.length,
-    frameOffsets: Object.fromEntries(frameOffsets)
-  });
-
   return {
     fields,
     elements,
@@ -288,11 +318,6 @@ function blurFaceRegions(image, detections) {
 
 function drawPiiRedactions(fields, viewport) {
   if (!viewport?.width || !viewport?.height) {
-    console.log("PII redaction skipped: missing viewport data", {
-      canvasWidth: screenshotCanvas.width,
-      canvasHeight: screenshotCanvas.height,
-      viewport
-    });
     return;
   }
 
@@ -384,10 +409,13 @@ async function captureRedactedScreenshot() {
     statusMessage.textContent = "Detecting faces...";
     const inferenceStart = performance.now();
     const result = faceDetector.detect(image);
-    console.log(`Face detector inference time: ${(performance.now() - inferenceStart).toFixed(1)} ms`);
+    performanceMetrics.detectionMs = performance.now() - inferenceStart;
+    console.log(`Face detector inference time: ${performanceMetrics.detectionMs.toFixed(1)} ms`);
 
     statusMessage.textContent = "Scanning form fields...";
+    const domScanStart = performance.now();
     const piiScan = await getPiiFields(activeTab?.id);
+    performanceMetrics.domScanMs = performance.now() - domScanStart;
 
     drawRedactedScreenshot(image, result.detections, piiScan);
     latestPiiFields = piiScan.fields;
@@ -408,6 +436,10 @@ async function captureRedactedScreenshot() {
     if (!outboundCheck.valid) {
       throw new Error(outboundCheck.error);
     }
+
+    const modelImageDataUrl = getModelImageDataUrl();
+    performanceMetrics.imageSizeKb = modelImageDataUrl.length / 1024;
+    updatePerformanceStats();
 
     statusMessage.textContent = `${result.detections.length} face(s) blurred, ${piiScan.fields.length} field(s) redacted`;
     return { activeTab, piiScan, sanitizedDataUrl: outboundCheck.sanitizedDataUrl };
@@ -434,6 +466,7 @@ async function requestAgentAction(imageDataUrl, piiFields, elements, task) {
   const modelElements = prepareModelElements(elements);
 
   try {
+    const serverStart = performance.now();
     response = await fetch(analyzeUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -441,9 +474,13 @@ async function requestAgentAction(imageDataUrl, piiFields, elements, task) {
         image: imageDataUrl,
         pii_fields: piiFields,
         elements: modelElements,
-        task: sanitizedTask
+        task: sanitizedTask,
+        provider: providerSelect.value
       })
     });
+    performanceMetrics.serverRoundTripMs = performance.now() - serverStart;
+    performanceMetrics.imageSizeKb = imageDataUrl.length / 1024;
+    updatePerformanceStats();
   } catch (error) {
     throw new Error(`Unable to reach the agent server. Is it running at ${analyzeUrl}? ${error.message}`);
   }
@@ -925,6 +962,7 @@ async function runCapture() {
 
   try {
     await captureRedactedScreenshot();
+    updatePerformanceStats();
   } catch (error) {
     statusMessage.textContent = error.message;
     console.error(error);
@@ -963,6 +1001,7 @@ async function runAgent() {
         latestElements,
         task
       );
+      updatePerformanceStats();
       agentResult.textContent = `${response.reasoning}${response.complete ? "\n\nTask complete." : ""}`;
 
       if (response.complete && (!response.actions || response.actions.length === 0)) {
