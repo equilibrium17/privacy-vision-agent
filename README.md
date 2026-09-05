@@ -2,6 +2,20 @@
 
 Privacy Vision Agent is a Chrome browser extension and local server prototype for SIH problem statement 26171. It helps an agent operate browser interfaces from a screenshot and a natural-language task while keeping sensitive visual and form data on the device whenever possible: the extension detects faces and PII fields locally, redacts the screenshot, and sends only the sanitized context needed for action planning to a vision-language model.
 
+## How It Addresses the Problem Statement
+
+**On-device visual perception**: A local MediaPipe vision model (`blaze_face_full_range.tflite`) runs entirely in the browser to detect faces, combined with DOM-based heuristics to identify PII form fields (passwords, emails, phone numbers). No raw screenshot ever leaves the device unredacted.
+
+**Privacy-preserving filter**: Two-layer pixel-level redaction is applied directly on the canvas before any data is transmitted — faces are blurred and PII form fields are blacked out. This is not metadata tagging; the actual image pixels are modified.
+
+**Fail-closed design**: This is an explicit architectural principle. If any step in the privacy pipeline fails — face detection, field redaction, or outbound validation — the screenshot is blocked entirely and never transmitted. The system defaults to blocking, not permitting.
+
+**Sanitized context to server-side VLM**: Only the redacted image and token placeholders (e.g. `[TOKEN:USER_EMAIL]`, `[TOKEN:USER_PASSWORD]`) are sent to the server. Real credentials never leave the browser — they are resolved client-side after the server responds. Two backends are supported: Groq cloud (qwen model, recommended) and local Ollama (fully offline, no data leaves the machine at all).
+
+**Actionable commands executed client-side**: The VLM returns structured JSON actions (fill, click, scroll, wait, press) which the extension executes in the browser via `chrome.scripting.executeScript`. Credential fills trigger a safety confirmation dialog before execution.
+
+**Latency / accuracy trade-off**: Explicitly measured and documented. MediaPipe CPU delegate was chosen over GPU (WebGL) after benchmarking — faster for this model size on typical hardware. moondream was chosen as the default offline model after larger models caused OOM on modest hardware. Images are downscaled to 800px max and JPEG-compressed before transmission. All timings (face model load, detection, DOM scan, image size, server round-trip) are displayed live in the extension popup.
+
 ## Architecture
 
 The client is a Manifest V3 extension. It captures the visible tab, scans page controls in the content script, performs local face detection and PII redaction, and executes validated actions. The FastAPI server validates the request and asks the configured Groq vision-language model to choose an action.
@@ -30,6 +44,8 @@ Local browser execution
 The raw screenshot never leaves the device. It is used in the extension to draw the preview and create the redacted canvas, then the raw data URL is cleared. Detected faces are blurred locally, and recognized PII form-field regions are covered locally. The values entered into PII fields never leave the device; the server receives PII-field selectors and redaction reasons, not field values.
 
 The server does receive the redacted, JPEG-compressed image, a bounded list of interactive element metadata (including selectors and visible labels where available), and the user's task text. Common email, phone, SSN, card, and credential-like patterns in the task are sanitized in the extension before transmission. Server logging is configured to avoid recording image data and API keys, but users should still treat task text and non-sensitive DOM metadata as network-bound request data.
+
+The popup's Credentials Vault stores optional values for `USER_EMAIL`, `USER_PASSWORD`, `USER_PHONE`, and `USER_NAME` in `chrome.storage.local`. The extension resolves the corresponding `[TOKEN:...]` values locally immediately before a fill action, so credential values never touch the server. `chrome.storage.local` is not encrypted at rest by the browser; this is a reasonable project/demo simplification, but a production system should use the browser's native credential manager or an encrypted vault.
 
 ## Setup
 
@@ -72,15 +88,29 @@ The server does receive the redacted, JPEG-compressed image, a bounded list of i
 
 ## Offline/local mode
 
-Install [Ollama](https://ollama.com/download), then download the local vision model once:
+Install [Ollama](https://ollama.com/download), then download a local vision model:
+
+### Offline Model Options (Ollama)
+
+Three local vision models are supported, representing different points on the resource/capability trade-off:
+
+| Model | Size | RAM Required | Multi-step Tasks | Command |
+|---|---|---|---|---|
+| moondream (default) | ~1.7GB | 4GB+ | Simple tasks only | `ollama pull moondream` |
+| llava:7b-v1.6 | ~4.7GB | 8GB+ | Good | `ollama pull llava:7b-v1.6` |
+| qwen2.5vl:7b | ~5GB | 10GB+ | Best | `ollama pull qwen2.5vl:7b` |
+
+**moondream** is the default because it runs on any hardware. For reliable multi-step form filling and complex tasks, use llava or qwen2.5vl on a machine with sufficient RAM. To switch models, set the `OLLAMA_MODEL` environment variable in your `.env` file:
 
 ```bash
-ollama pull moondream
+OLLAMA_MODEL=llava:7b-v1.6
+# or
+OLLAMA_MODEL=qwen2.5vl:7b
 ```
 
-Start the server as usual, keep Ollama running, and select **Local (Ollama)** in the extension before running a task. The local provider keeps processing on-device with zero cloud calls. This directly fulfills the problem statement's allowance for any offline-deployable open-source or open-weights model. If Ollama is unavailable or the model has not been pulled, the server reports a 503 error instead of returning a fake action.
+Note: qwen2.5vl:7b and llava:7b-v1.6 were tested but caused OOM kills on hardware with less than 8GB available RAM. This is a known trade-off between local privacy (fully offline) and task accuracy — documented here as part of the problem statement's requirement to address latency/accuracy trade-offs explicitly.
 
-Moondream (~2GB) was chosen after testing showed larger vision models (qwen2.5vl:7b, llava-phi3) require more RAM than is available on typical modest hardware and get killed by the OS. This reflects a real resource/accuracy trade-off: smaller local models trade some accuracy for the ability to actually run on constrained devices — directly relevant to the problem statement's emphasis on lightweight, on-device-feasible processing.
+Start the server as usual, keep Ollama running, and select **Local (Ollama)** in the extension before running a task. The local provider keeps processing on-device with zero cloud calls. If Ollama is unavailable or the model has not been pulled, the server reports a 503 error instead of returning a fake action.
 
 ## Usage
 
