@@ -3,6 +3,15 @@
     return;
   }
 
+  const piiText = globalThis.__privacyVisionPii;
+
+  if (!piiText) {
+    // pii-patterns.js must be injected before this script. Without it there is
+    // no text-PII detection, so refuse to register a scanner that would look
+    // like it had checked the page.
+    throw new Error("privacy-vision-agent: pii-patterns.js was not loaded before content.js");
+  }
+
   window.__privacyVisionAgentContentLoaded = true;
 
   const documentedPiiAutocompleteTokens = new Set([
@@ -276,18 +285,34 @@
   }
 
   function getAssociatedLabelText(element) {
+    // The same <label> is usually reachable more than one way (element.labels,
+    // label[for=...], aria-labelledby). Collecting them all without dedup is
+    // what turned one "Username" caption into a "Username Username" target.
     const labels = [];
+    const seenNodes = new Set();
+    const seenText = new Set();
+
+    const addLabel = (labelElement) => {
+      if (!labelElement || seenNodes.has(labelElement)) {
+        return;
+      }
+      seenNodes.add(labelElement);
+      const text = normalizeWhitespace(labelElement.innerText);
+      const key = text.toLowerCase();
+      if (!text || seenText.has(key)) {
+        return;
+      }
+      seenText.add(key);
+      labels.push(text);
+    };
 
     if (element.labels) {
-      labels.push(...Array.from(element.labels).map((label) => label.innerText));
+      Array.from(element.labels).forEach(addLabel);
     }
 
     if (element.id) {
       try {
-        labels.push(
-          ...Array.from(document.querySelectorAll(`label[for="${cssEscape(element.id)}"]`))
-            .map((label) => label.innerText)
-        );
+        Array.from(document.querySelectorAll(`label[for="${cssEscape(element.id)}"]`)).forEach(addLabel);
       } catch (error) {
         // Unusual IDs can break selector construction; nearby text still helps.
       }
@@ -296,10 +321,7 @@
     const labelledBy = element.getAttribute("aria-labelledby");
     if (labelledBy) {
       for (const id of labelledBy.split(/\s+/).filter(Boolean)) {
-        const labelElement = document.getElementById(id);
-        if (labelElement) {
-          labels.push(labelElement.innerText);
-        }
+        addLabel(document.getElementById(id));
       }
     }
 
@@ -335,14 +357,31 @@
     );
   }
 
-  function walkDomTree(root, controls, interactiveElements, selectorPath = "") {
+  function walkDomTree(root, controls, interactiveElements, selectorPath = "", namingRoot = document) {
     const children = root instanceof Document || root instanceof ShadowRoot
       ? root.children
       : root.children ?? [];
 
     for (const child of children) {
       const selectorPart = getSelectorPart(child);
-      const currentPath = selectorPath ? `${selectorPath} ${selectorPart}` : selectorPart;
+      // Attribute selectors are only self-sufficient when they identify one
+      // element in the current naming root (document or shadow root).
+      let isUniquePart = false;
+      try {
+        isUniquePart = namingRoot.querySelectorAll(selectorPart).length === 1;
+      } catch {
+        isUniquePart = false;
+      }
+      // A unique part replaces its ancestor chain, but it must keep any
+      // "::shadow" hops: a unique id inside a shadow root is not reachable
+      // from the document, so dropping the prefix produced a dead selector.
+      const shadowHopEnd = selectorPath.lastIndexOf("::shadow");
+      const shadowPrefix = shadowHopEnd === -1
+        ? ""
+        : selectorPath.slice(0, shadowHopEnd + "::shadow".length);
+      const currentPath = (selectorPath && !isUniquePart)
+        ? `${selectorPath} ${selectorPart}`
+        : (shadowPrefix ? `${shadowPrefix} ${selectorPart}` : selectorPart);
       const tagName = child.tagName.toLowerCase();
 
       if (tagName === "input" || tagName === "textarea" || tagName === "select") {
@@ -359,10 +398,10 @@
         });
       }
 
-      walkDomTree(child, controls, interactiveElements, currentPath);
-
       if (child.shadowRoot) {
-        walkDomTree(child.shadowRoot, controls, interactiveElements, `${currentPath}::shadow`);
+        walkDomTree(child.shadowRoot, controls, interactiveElements, `${currentPath}::shadow`, child.shadowRoot);
+      } else {
+        walkDomTree(child, controls, interactiveElements, currentPath, namingRoot);
       }
     }
   }
@@ -372,6 +411,149 @@
     const interactiveElements = [];
     walkDomTree(document, controls, interactiveElements);
     return { controls, interactiveElements };
+  }
+
+  const MAX_TEXT_PII_REGIONS = 300;
+  const MAX_TEXT_NODES_SCANNED = 4000;
+
+  function buildElementSelector(element) {
+    const parts = [];
+    let current = element;
+
+    for (let depth = 0; current && current.nodeType === 1 && depth < 5; depth += 1) {
+      parts.unshift(getSelectorPart(current));
+
+      try {
+        if (document.querySelectorAll(parts.join(" ")).length === 1) {
+          break;
+        }
+      } catch {
+        break;
+      }
+
+      current = current.parentElement;
+    }
+
+    return parts.join(" ");
+  }
+
+  function isTextHostVisible(element, visibilityCache) {
+    if (visibilityCache.has(element)) {
+      return visibilityCache.get(element);
+    }
+
+    let visible = false;
+
+    if (!piiText.isNonRenderedTag(element.tagName)) {
+      const style = window.getComputedStyle(element);
+      visible =
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        Number(style.opacity) !== 0 &&
+        Boolean(getVisibleRect(element));
+    }
+
+    visibilityCache.set(element, visible);
+    return visible;
+  }
+
+  // Turn every PII span found in visible text into viewport rectangles so the
+  // popup's existing redaction pass can black those pixels out.
+  function scanVisibleTextPii() {
+    const regions = [];
+
+    if (!document.body) {
+      return regions;
+    }
+
+    const visibilityCache = new Map();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+
+        if (!parent || !node.nodeValue || !node.nodeValue.trim()) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        if (piiText.isNonRenderedTag(parent.tagName)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    let scanned = 0;
+    let previousText = "";
+    let previousParent = null;
+
+    while (walker.nextNode() && scanned < MAX_TEXT_NODES_SCANNED && regions.length < MAX_TEXT_PII_REGIONS) {
+      scanned += 1;
+
+      const node = walker.currentNode;
+      const parent = node.parentElement;
+      // Labels and values are often split across sibling nodes
+      // (<dt>Name</dt><dd>...</dd>, <label>Username:</label> <span>...</span>).
+      // Offer the previous nearby text node as context so contextual entity
+      // rules can see the label; matches are still reported for this node only.
+      const sharesContext = Boolean(previousParent && parent) && (
+        previousParent === parent ||
+        previousParent.parentElement === parent.parentElement ||
+        previousParent.parentElement === parent ||
+        parent.parentElement === previousParent
+      );
+      const matches = piiText.detectPiiMatches(
+        node.nodeValue,
+        sharesContext ? { prefix: previousText } : undefined
+      );
+
+      previousText = node.nodeValue;
+      previousParent = parent;
+
+      if (matches.length === 0) {
+        continue;
+      }
+
+      if (!parent || !isTextHostVisible(parent, visibilityCache)) {
+        continue;
+      }
+
+      const selector = buildElementSelector(parent);
+
+      for (const match of matches) {
+        if (regions.length >= MAX_TEXT_PII_REGIONS) {
+          break;
+        }
+
+        const range = document.createRange();
+        range.setStart(node, match.start);
+        range.setEnd(node, match.end);
+
+        // A span can wrap across lines, so each client rect is redacted separately.
+        for (const clientRect of range.getClientRects()) {
+          const x = Math.max(clientRect.x - 1, 0);
+          const y = Math.max(clientRect.y - 1, 0);
+          const right = Math.min(clientRect.right + 1, window.innerWidth);
+          const bottom = Math.min(clientRect.bottom + 1, window.innerHeight);
+          const width = right - x;
+          const height = bottom - y;
+
+          if (width <= 0 || height <= 0) {
+            continue;
+          }
+
+          regions.push({
+            selector,
+            rect: { x, y, width, height },
+            reason: `text-pii:${match.type}`
+          });
+        }
+
+        range.detach?.();
+      }
+    }
+
+    return regions;
   }
 
   function scanPiiFields() {
@@ -416,14 +598,20 @@
         continue;
       }
 
+      // A placeholder or name that only repeats the label is noise the model
+      // reads as a second word in the target's name.
+      const isEcho = (value) => !value || normalizeWhitespace(value).toLowerCase() === label.toLowerCase();
+      const placeholder = truncateText(element.getAttribute("placeholder") || "");
+      const name = truncateText(element.getAttribute("name") || "", 80);
+
       elements.push({
         selector,
         tag: tagName,
         role: element.getAttribute("role") || undefined,
         type: type || undefined,
         label: label || undefined,
-        placeholder: truncateText(element.getAttribute("placeholder") || "") || undefined,
-        name: truncateText(element.getAttribute("name") || "", 80) || undefined,
+        placeholder: isEcho(placeholder) ? undefined : placeholder,
+        name: isEcho(name) ? undefined : name,
         reason: piiReason || undefined,
         rect
       });
@@ -433,9 +621,24 @@
       }
     }
 
+    let textPiiError;
+    let textPiiCount = 0;
+
+    try {
+      const textRegions = scanVisibleTextPii();
+      textPiiCount = textRegions.length;
+      fields.push(...textRegions);
+    } catch (error) {
+      // Reported to the popup, which fails closed rather than transmitting a
+      // screenshot whose visible text was never checked.
+      textPiiError = error?.message || String(error);
+    }
+
     return {
       fields,
       elements,
+      textPiiCount,
+      textPiiError,
       framePath,
       childFrameRects: getChildFrameRects(framePath),
       viewport: {

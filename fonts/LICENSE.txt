@@ -1,0 +1,14 @@
+Bundled so the popup never requests fonts from a third-party host.
+
+instrument-serif-regular.woff2, instrument-serif-italic.woff2
+  Instrument Serif — Copyright 2022 The Instrument Serif Project Authors
+
+inter-latin-var.woff2
+  Inter — Copyright 2020 The Inter Project Authors
+
+jetbrains-mono-latin-var.woff2
+  JetBrains Mono — Copyright 2020 The JetBrains Mono Project Authors
+
+All three families are licensed under the SIL Open Font License, Version 1.1:
+https://openfontlicense.org
+Files are the Latin subsets distributed by Google Fonts.

@@ -8,5 +8,8 @@
   "license": "ISC",
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1"
+  },
+  "scripts": {
+    "test": "node --test test/"
   }
 }

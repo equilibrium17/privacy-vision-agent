@@ -4,94 +4,206 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Privacy Vision Agent</title>
-    <style>
-      body {
-        width: 320px;
-        margin: 0;
-        padding: 16px;
-        font-family: Arial, sans-serif;
-        color: #1f2937;
-        background: #ffffff;
-      }
-
-      button {
-        width: 100%;
-        padding: 10px 12px;
-        border: 0;
-        border-radius: 6px;
-        color: #ffffff;
-        background: #2563eb;
-        cursor: pointer;
-        font-size: 14px;
-      }
-
-      #taskInput {
-        box-sizing: border-box;
-        width: 100%;
-        margin: 12px 0 8px;
-        padding: 9px 10px;
-        border: 1px solid #9ca3af;
-        border-radius: 6px;
-        font: inherit;
-        font-size: 13px;
-      }
-
-      #runAgentButton {
-        background: #047857;
-      }
-
-      button:disabled {
-        cursor: not-allowed;
-        opacity: 0.7;
-      }
-
-      #screenshotCanvas {
-        width: 100%;
-        margin-top: 12px;
-        border: 1px solid #d1d5db;
-        border-radius: 6px;
-        display: none;
-      }
-
-      #status {
-        min-height: 18px;
-        margin-top: 10px;
-        font-size: 12px;
-        color: #4b5563;
-      }
-
-      #agentResult {
-        margin-top: 10px;
-        padding: 9px;
-        border-left: 3px solid #047857;
-        background: #f0fdf4;
-        font-size: 12px;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
-
-      #perfStats {
-        margin-top: 8px;
-        color: #6b7280;
-        font-size: 10px;
-        line-height: 1.4;
-        overflow-wrap: anywhere;
-      }
-    </style>
+    <link rel="stylesheet" href="popup.css">
   </head>
   <body>
-    <button id="captureButton" type="button">Capture Screen</button>
-    <input id="taskInput" type="text" placeholder="Describe a task" aria-label="Task description">
-    <label for="providerSelect">Provider:</label>
-    <select id="providerSelect" aria-label="Provider">
-      <option value="groq" selected>Cloud (Groq)</option>
-      <option value="ollama">Local (Ollama)</option>
-    </select>
-    <button id="runAgentButton" type="button">Run Agent</button>
-    <div id="status" role="status" aria-live="polite"></div>
-    <div id="agentResult" role="status" aria-live="polite" hidden></div>
-    <div id="perfStats" aria-live="polite">Face model: — | Face delegate: CPU | Detection: — | DOM scan: — | Image: — | Server: —</div>
-    <canvas id="screenshotCanvas" aria-label="Captured current tab screenshot with face detections"></canvas>
+    <div class="app" id="app" data-shield="idle" data-agent="idle">
+      <header class="masthead">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+            <path d="M1.5 5.5v-2a2 2 0 0 1 2-2h2M12.5 1.5h2a2 2 0 0 1 2 2v2M16.5 12.5v2a2 2 0 0 1-2 2h-2M5.5 16.5h-2a2 2 0 0 1-2-2v-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+            <rect class="brand-bar" x="4.75" y="7.75" width="8.5" height="2.5" rx="0.5"/>
+          </svg>
+          <span class="brand-name">Privacy Vision</span>
+          <span class="brand-tag">Agent</span>
+        </div>
+        <button class="icon-button" id="settingsToggle" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+            <path d="M4 7h9M17 7h3M4 17h3M11 17h9"/>
+            <circle cx="15" cy="7" r="2"/>
+            <circle cx="9" cy="17" r="2"/>
+          </svg>
+        </button>
+      </header>
+
+      <section class="settings" id="settingsPanel" aria-label="Settings" hidden>
+        <label class="eyebrow" for="providerSelect">Model route</label>
+        <select class="select" id="providerSelect">
+          <option value="groq" selected>Cloud (Groq)</option>
+          <option value="nvidia">Cloud (NVIDIA)</option>
+          <option value="ollama">Local (Ollama)</option>
+        </select>
+        <p class="hint">Every route receives only the redacted frame and sanitized text.</p>
+
+        <details class="vault" id="credentialsVault">
+          <summary>
+            <span>Credentials vault</span>
+            <span class="aside summary-aside">this device</span>
+            <svg class="chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </summary>
+          <div class="vault-body">
+            <p class="hint">Resolved locally for tokenized fill actions. Values stay masked until a field is focused.</p>
+            <label for="credentialUserEmail">USER_EMAIL</label>
+            <input id="credentialUserEmail" data-credential-token="USER_EMAIL" type="email" autocomplete="email">
+            <label for="credentialUserUsername">USER_USERNAME</label>
+            <input id="credentialUserUsername" data-credential-token="USER_USERNAME" type="text" autocomplete="username">
+            <label for="credentialUserPassword">USER_PASSWORD</label>
+            <input id="credentialUserPassword" data-credential-token="USER_PASSWORD" type="password" autocomplete="current-password">
+            <label for="credentialUserPhone">USER_PHONE</label>
+            <input id="credentialUserPhone" data-credential-token="USER_PHONE" type="tel" autocomplete="tel">
+            <label for="credentialUserName">USER_NAME</label>
+            <input id="credentialUserName" data-credential-token="USER_NAME" type="text" autocomplete="name">
+            <div class="vault-actions">
+              <button class="button button-ghost button-small" id="saveCredentialsButton" type="button">Save</button>
+              <div id="credentialsStatus" role="status" aria-live="polite"></div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <main>
+        <section class="shield" aria-labelledby="shieldState">
+          <p class="state-line"><span class="signal" aria-hidden="true"></span><span id="shieldState">Standing by</span></p>
+          <h1 class="shield-headline" id="shieldHeadline">Redacted <em>here</em>, before any model sees the page.</h1>
+          <p class="shield-reason" id="shieldReason" hidden></p>
+
+          <div class="page">
+            <div>
+              <p class="page-host mono" id="pageHost">—</p>
+              <p class="page-note" id="pageNote">Privacy layer ready · no capture yet</p>
+            </div>
+            <dl class="facts">
+              <div>
+                <dt>Redaction</dt>
+                <dd>On device</dd>
+              </div>
+              <div>
+                <dt>Route</dt>
+                <dd id="routeLabel">Cloud (Groq)</dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="ledgerTitle">
+          <div class="section-head">
+            <h2 class="eyebrow" id="ledgerTitle">Privacy filter</h2>
+            <span class="aside" id="ledgerStamp">No capture yet</span>
+          </div>
+          <ul class="ledger-grid">
+            <li class="ledger-cell"><span class="count" id="countFaces">—</span><span class="ledger-label">Faces</span></li>
+            <li class="ledger-cell"><span class="count" id="countFields">—</span><span class="ledger-label">Form fields</span></li>
+            <li class="ledger-cell"><span class="count" id="countText">—</span><span class="ledger-label">Text PII</span></li>
+            <li class="ledger-cell"><span class="count" id="countEntities">—</span><span class="ledger-label">Entities</span></li>
+          </ul>
+          <p class="ledger-note" id="ledgerNote">Counts appear after the first local capture.</p>
+        </section>
+
+        <section class="section" aria-labelledby="agentTitle">
+          <div class="section-head">
+            <h2 class="eyebrow" id="agentTitle">Agent</h2>
+            <span class="phase"><span class="phase-dot" aria-hidden="true"></span><span id="agentPhase">Idle</span></span>
+          </div>
+
+          <div id="agentIdle">
+            <p class="empty-title">No active task</p>
+            <p class="empty-body">Each round starts with a local redaction pass. The remote model only sees what survives it.</p>
+          </div>
+
+          <div id="agentRun" hidden>
+            <p class="agent-detail" id="agentDetail"></p>
+            <p class="eyebrow">Current task</p>
+            <p class="task-text" id="taskEcho"></p>
+            <p class="task-note" id="taskNote" hidden>Personal details were replaced before sending.</p>
+            <div id="planBlock" hidden>
+              <div class="progress">
+                <span class="step-count mono" id="stepCount">Step — / —</span>
+                <span class="ticks" id="stepTicks" aria-hidden="true"></span>
+              </div>
+              <ol class="plan" id="planList" aria-label="Plan"></ol>
+            </div>
+            <p class="outcome" id="outcome" hidden><strong id="outcomeTitle"></strong><span id="outcomeReason"></span></p>
+          </div>
+
+          <div class="command">
+            <label class="eyebrow" for="taskInput">Task</label>
+            <textarea class="task-input" id="taskInput" rows="2" placeholder="Describe what the agent should do on this page" aria-describedby="taskHint"></textarea>
+            <p class="field-hint" id="taskHint" hidden></p>
+            <div class="actions">
+              <button class="button button-primary" id="runAgentButton" type="button">
+                Run agent <span class="kbd" id="runShortcut" aria-hidden="true">Ctrl ↵</span>
+              </button>
+              <button class="button button-ghost" id="captureButton" type="button" aria-describedby="captureDescription">Capture</button>
+              <span class="visually-hidden" id="captureDescription">Redact the visible tab locally without contacting the agent server.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="activityTitle">
+          <div class="section-head">
+            <h2 class="eyebrow" id="activityTitle">Activity</h2>
+            <span class="aside" id="activityCount"></span>
+          </div>
+          <ol class="timeline" id="timeline"></ol>
+          <div id="activityEmpty">
+            <p class="empty-title">Nothing yet</p>
+            <p class="empty-body">Captures and agent steps will appear here.</p>
+          </div>
+          <button class="text-button" id="timelineMore" type="button" aria-controls="timeline" aria-expanded="false" hidden></button>
+        </section>
+
+        <details class="disclosure">
+          <summary>
+            <span>Protection details</span>
+            <span class="aside summary-aside">timings · frame</span>
+            <svg class="chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </summary>
+          <div class="disclosure-body">
+            <h3 class="eyebrow subhead">Pipeline</h3>
+            <dl class="stats" id="pipelineStats"></dl>
+            <h3 class="eyebrow subhead">Redacted frame</h3>
+            <p class="hint" id="frameEmpty">No frame captured yet.</p>
+            <canvas id="screenshotCanvas" aria-label="Redacted copy of the last capture"></canvas>
+            <p class="hint">The redacted copy of the last capture. The model receives a downscaled version of it.</p>
+          </div>
+        </details>
+
+        <details class="disclosure" id="auditDisclosure">
+          <summary>
+            <span>Privacy audit</span>
+            <span class="aside summary-aside" id="auditAside">—</span>
+            <svg class="chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </summary>
+          <div class="disclosure-body">
+            <p class="audit-total"><span class="count" id="auditTotal">—</span><span>protections recorded</span></p>
+            <dl class="stats" id="auditTypes"></dl>
+            <h3 class="eyebrow subhead">Most recent</h3>
+            <ol class="audit-log" id="auditLog"></ol>
+            <p class="hint" id="auditEmpty" hidden>Nothing recorded yet.</p>
+            <p class="hint">Stored on this device. Metadata only: type, source, region and origin. Never values, text or images.</p>
+          </div>
+        </details>
+      </main>
+
+      <footer class="colophon">
+        <span>Local redaction before remote inference</span>
+        <span class="mono" id="versionLabel"></span>
+      </footer>
+    </div>
+
+    <!-- Legacy outputs written by popup.js; popup-ui.js mirrors them (sanitized) into the layout above. -->
+    <div hidden>
+      <div id="status"></div>
+      <div id="agentResult" hidden></div>
+      <div id="perfStats">Face model: — | Face delegate: CPU | Detection: — | DOM scan: — | Image: — | Server: —</div>
+    </div>
+    <div class="visually-hidden" id="liveAnnouncer" role="status" aria-live="polite"></div>
+
+    <script src="pii-patterns.js"></script>
+    <script src="agent-loop.js"></script>
+    <script src="verification-evidence.js"></script>
+    <script src="redaction-audit.js"></script>
+    <script src="popup-ui.js"></script>
     <script type="module" src="popup.js"></script>
   </body>
 </html>
